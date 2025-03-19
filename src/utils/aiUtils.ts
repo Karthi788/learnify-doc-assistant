@@ -1,8 +1,9 @@
 import { ChatMessage, DocumentMetadata, StudyPlan, StudySession } from "@/types/document";
 import { toast } from "sonner";
 
-const API_KEY = "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"; // Note: This is not secure for production
-const API_URL = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2";
+// Update API key to use Mistral API
+const API_KEY = "DjyJA9MFtGcViA7SvdgIp3Fg4iH7tPrW"; // Note: This is not secure for production
+const API_URL = "https://api.mistral.ai/v1/chat/completions"; // Mistral API endpoint
 
 // In a production application, this key should be stored securely,
 // preferably on the server-side, not in the client-side code
@@ -36,11 +37,8 @@ export async function processQuery(
       }
     ]);
 
-    // In a real application, we would call the Hugging Face API here
-    // For now, we'll simulate a delay and response
-    
-    // Simulated API call
-    const response = await simulateAiResponse(query, documentContent);
+    // Call the Mistral API
+    const response = await callMistralAPI(systemPrompt, query);
     
     // Update the message with the response
     setMessages(prev => 
@@ -59,34 +57,53 @@ export async function processQuery(
   }
 }
 
-// For demonstration purposes, we'll simulate the AI response
-// In a real application, this would be replaced with actual API calls
-async function simulateAiResponse(query: string, documentContent: string): Promise<string> {
-  // Simulate network delay
-  await new Promise(resolve => setTimeout(resolve, 1500));
-  
-  // Simple keyword matching to simulate document-based answering
-  const queryLower = query.toLowerCase();
-  const documentLower = documentContent.toLowerCase();
-  
-  if (documentLower.includes(queryLower)) {
-    // Find a sentence containing the query keywords
-    const sentences = documentContent.split('.');
-    const relevantSentence = sentences.find(s => s.toLowerCase().includes(queryLower));
-    
-    return `Based on the document: ${relevantSentence || 'I found relevant information but cannot extract a specific sentence.'}`;
-  } else {
-    return "I'm sorry, but I couldn't find information related to your question in the document.";
+// Function to call the Mistral API
+async function callMistralAPI(systemPrompt: string, userQuery: string): Promise<string> {
+  try {
+    const response = await fetch(API_URL, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "mistral-small-latest", // Using Mistral's small model
+        messages: [
+          {
+            role: "system",
+            content: systemPrompt
+          },
+          {
+            role: "user",
+            content: userQuery
+          }
+        ],
+        max_tokens: 1024,
+        temperature: 0.7,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      console.error("Mistral API error:", errorData);
+      throw new Error(`API request failed with status ${response.status}`);
+    }
+
+    const data = await response.json();
+    return data.choices[0]?.message?.content || "I couldn't generate a response.";
+  } catch (error) {
+    console.error("Error calling Mistral API:", error);
+    return "I encountered an error while processing your request.";
   }
 }
 
 // In a real implementation, this would call an API
 export async function callHuggingFaceAPI(prompt: string): Promise<string> {
   try {
-    const response = await fetch(API_URL, {
+    const response = await fetch("https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${API_KEY}`,
+        "Authorization": `Bearer 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`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
