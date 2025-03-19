@@ -31,9 +31,9 @@ const ChatInterface = ({ document, isDocumentReady }: ChatInterfaceProps) => {
     
     if (!currentMessage.trim() || !isDocumentReady || isProcessing) return;
     
-    // Add user message
+    // Add user message with a unique ID that includes timestamp
     const userMessage: ChatMessage = {
-      id: Date.now().toString(),
+      id: `user-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
       role: "user",
       content: currentMessage,
       timestamp: new Date()
@@ -56,17 +56,6 @@ const ChatInterface = ({ document, isDocumentReady }: ChatInterfaceProps) => {
       setIsProcessing(false);
     }
   };
-  
-  // Check if we have unique IDs for each message to avoid React key warnings
-  useEffect(() => {
-    // This ensures each message has a truly unique ID
-    setMessages(prevMessages => 
-      prevMessages.map((msg, index) => ({
-        ...msg,
-        id: msg.id || `msg-${index}-${Date.now()}`
-      }))
-    );
-  }, []);
   
   return (
     <div className="flex flex-col h-full">

@@ -1,5 +1,10 @@
 
 import { DocumentMetadata, FileType } from "@/types/document";
+import * as pdfjs from 'pdfjs-dist';
+
+// Set worker path for PDF.js
+const pdfjsWorker = await import('pdfjs-dist/build/pdf.worker.entry');
+pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
 export const extractFileType = (fileName: string): FileType => {
   const extension = fileName.split('.').pop()?.toLowerCase() || '';
@@ -37,67 +42,69 @@ export const createDocumentMetadata = (file: File): DocumentMetadata => {
   };
 };
 
-// Actual document text extraction - now reads file content
-export const extractDocumentText = async (file: File): Promise<string> => {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
+// Process PDF files using PDF.js
+async function extractPdfText(file: File): Promise<string> {
+  try {
+    const arrayBuffer = await file.arrayBuffer();
+    const pdf = await pdfjs.getDocument(arrayBuffer).promise;
     
-    reader.onload = (e) => {
-      try {
-        const fileType = extractFileType(file.name);
-        let content = '';
-        
-        if (e.target?.result) {
-          if (fileType === 'TXT') {
-            // For text files, we can directly use the result
-            content = e.target.result as string;
-          } else if (fileType === 'PDF') {
-            // For PDF files in a real implementation, we would use PDF.js
-            // For now, we'll just use the text content if it's a text-based PDF
-            content = e.target.result as string;
-            // Strip any binary data or use proper PDF.js parsing
-            content = content.replace(/[^\x20-\x7E\r\n]/g, '');
-          } else if (fileType === 'DOCX') {
-            // For DOCX files in a real implementation, we would use mammoth.js
-            // For now, we'll just use the text content if available
-            content = e.target.result as string;
-            // Strip any binary data or use proper docx parsing library
-            content = content.replace(/[^\x20-\x7E\r\n]/g, '');
-          }
-          
-          if (content) {
-            resolve(content);
-          } else {
-            // If we couldn't extract content, create a meaningful message
-            resolve(`Document content from ${file.name}. This file type (${fileType}) requires special processing. Please make sure you're uploading a text-based document for best results.`);
-          }
-        } else {
-          reject(new Error("Failed to read file content"));
-        }
-      } catch (error) {
-        console.error("Error extracting text:", error);
-        reject(error);
-      }
-    };
+    let fullText = '';
+    const maxPages = pdf.numPages;
     
-    reader.onerror = (error) => {
-      console.error("Error reading file:", error);
-      reject(error);
-    };
-    
-    // For text files, read as text
-    if (file.type === 'text/plain') {
-      reader.readAsText(file);
-    } else {
-      // For PDF and DOCX, in a full implementation we'd use specialized libraries
-      // For now, try to read as text if possible, otherwise read as array buffer
-      try {
-        reader.readAsText(file);
-      } catch (error) {
-        reader.readAsArrayBuffer(file);
-      }
+    // Extract text from each page
+    for (let i = 1; i <= maxPages; i++) {
+      const page = await pdf.getPage(i);
+      const textContent = await page.getTextContent();
+      const pageText = textContent.items.map((item: any) => item.str).join(' ');
+      fullText += pageText + '\n\n';
     }
-  });
+    
+    return fullText;
+  } catch (error) {
+    console.error("Error extracting PDF text:", error);
+    return `Failed to extract text from PDF. Error: ${error}`;
+  }
+}
+
+// Extract document text based on file type
+export const extractDocumentText = async (file: File): Promise<string> => {
+  try {
+    const fileType = extractFileType(file.name);
+    
+    if (fileType === 'PDF') {
+      return await extractPdfText(file);
+    } else if (fileType === 'TXT') {
+      return await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (e) => resolve(e.target?.result as string || '');
+        reader.onerror = reject;
+        reader.readAsText(file);
+      });
+    } else if (fileType === 'DOCX') {
+      // Use FileReader for DOCX (basic approach)
+      // In a production app, you would use mammoth.js or similar
+      return await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          try {
+            let content = e.target?.result as string || '';
+            // Strip any binary data for basic text extraction
+            content = content.replace(/[^\x20-\x7E\r\n]/g, ' ');
+            resolve(content);
+          } catch (error) {
+            reject(error);
+          }
+        };
+        reader.onerror = reject;
+        reader.readAsText(file);
+      });
+    } else {
+      return `Document type ${fileType} is not supported for text extraction.`;
+    }
+  } catch (error) {
+    console.error("Error extracting document text:", error);
+    return `Failed to extract text from document. Error: ${error}`;
+  }
 };
 
 // Estimate document stats from actual content
@@ -107,4 +114,18 @@ export const estimateDocumentStats = (text: string): { wordCount: number; pageCo
   const pages = Math.max(1, Math.ceil(words / 500));
   
   return { wordCount: words, pageCount: pages };
+};
+
+// Function to truncate document to a manageable size for API processing
+export const prepareDocumentForAI = (text: string, maxTokens: number = 100000): string => {
+  // Rough estimate: 1 token ≈ 4 characters for English text
+  const maxChars = maxTokens * 4;
+  
+  if (text.length <= maxChars) {
+    return text;
+  }
+  
+  // If document is too large, truncate it
+  const truncatedText = text.substring(0, maxChars);
+  return truncatedText + "\n\n[Document truncated due to size limitations]";
 };

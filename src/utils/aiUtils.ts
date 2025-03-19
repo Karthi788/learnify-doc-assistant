@@ -1,13 +1,10 @@
-
 import { ChatMessage, DocumentMetadata, StudyPlan, StudySession } from "@/types/document";
 import { toast } from "sonner";
+import { prepareDocumentForAI } from "./documentProcessor";
 
 // Update API key to use Mistral API
-const API_KEY = "DjyJA9MFtGcViA7SvdgIp3Fg4iH7tPrW"; // Note: This is not secure for production
-const API_URL = "https://api.mistral.ai/v1/chat/completions"; // Mistral API endpoint
-
-// In a production application, this key should be stored securely,
-// preferably on the server-side, not in the client-side code
+const API_KEY = "DjyJA9MFtGcViA7SvdgIp3Fg4iH7tPrW"; 
+const API_URL = "https://api.mistral.ai/v1/chat/completions"; 
 
 export async function processQuery(
   query: string, 
@@ -15,16 +12,8 @@ export async function processQuery(
   setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>
 ): Promise<string> {
   try {
-    // Create a system prompt that instructs the model how to behave
-    const systemPrompt = `You are a helpful AI assistant that answers questions based on the provided document. 
-    Only answer questions based on the document content. If the answer is not in the document, 
-    politely state that you couldn't find the information in the document.
-    
-    Document content: 
-    ${documentContent}`;
-    
-    // Create a unique message ID
-    const messageId = Date.now().toString();
+    // Create a unique message ID with timestamp to avoid duplicate keys
+    const messageId = `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     
     // Add a loading message from the assistant
     setMessages(prev => [
@@ -38,6 +27,19 @@ export async function processQuery(
       }
     ]);
 
+    // Prepare document by truncating if necessary to avoid token limit errors
+    const preparedDocument = prepareDocumentForAI(documentContent);
+    
+    // Create a system prompt that instructs the model how to behave
+    const systemPrompt = `You are a helpful AI assistant that answers questions based on the provided document. 
+    Only answer questions based on the document content. If the answer is not in the document, 
+    politely state that you couldn't find the information in the document.
+    
+    If the user asks about a specific topic that exists in the document, focus your answer on that topic's content.
+    
+    Document content: 
+    ${preparedDocument}`;
+    
     // Call the Mistral API
     const response = await callMistralAPI(systemPrompt, query);
     
@@ -53,6 +55,20 @@ export async function processQuery(
     return response;
   } catch (error) {
     console.error("Error processing query:", error);
+    
+    // Update error message in chat
+    setMessages(prev => {
+      const lastMessage = prev[prev.length - 1];
+      if (lastMessage && lastMessage.isLoading) {
+        return prev.map(msg => 
+          msg.id === lastMessage.id 
+            ? { ...msg, content: "I encountered an error while processing your request. Please try again with a more specific question.", isLoading: false } 
+            : msg
+        );
+      }
+      return prev;
+    });
+    
     toast.error("Failed to process your query. Please try again.");
     return "I'm sorry, I encountered an error processing your question. Please try again.";
   }
@@ -61,6 +77,10 @@ export async function processQuery(
 // Function to call the Mistral API
 async function callMistralAPI(systemPrompt: string, userQuery: string): Promise<string> {
   try {
+    // Log token estimate to help with debugging
+    const totalPromptLength = systemPrompt.length + userQuery.length;
+    console.log(`Estimated prompt length: ${totalPromptLength} characters (roughly ${Math.ceil(totalPromptLength/4)} tokens)`);
+    
     const response = await fetch(API_URL, {
       method: "POST",
       headers: {
@@ -87,14 +107,32 @@ async function callMistralAPI(systemPrompt: string, userQuery: string): Promise<
     if (!response.ok) {
       const errorData = await response.json();
       console.error("Mistral API error:", errorData);
-      throw new Error(`API request failed with status ${response.status}`);
+      
+      // If token limit exceeded, try with a shorter context
+      if (errorData.message && errorData.message.includes("too large for model")) {
+        console.log("Token limit exceeded, retrying with shorter context");
+        
+        // Create a shorter system prompt
+        const shorterPrompt = `You are a helpful AI assistant answering questions about a document.
+        I can only provide limited context due to size limitations.
+        If you need more specific information, please ask a more targeted question.
+        
+        Document excerpt:
+        ${systemPrompt.substring(systemPrompt.indexOf("Document content:") + 16, systemPrompt.indexOf("Document content:") + 50000)}
+        [Document truncated due to size limitations]`;
+        
+        // Try again with shorter context
+        return await callMistralAPI(shorterPrompt, userQuery);
+      }
+      
+      throw new Error(`API request failed with status ${response.status}: ${errorData.message || 'Unknown error'}`);
     }
 
     const data = await response.json();
     return data.choices[0]?.message?.content || "I couldn't generate a response.";
   } catch (error) {
     console.error("Error calling Mistral API:", error);
-    return "I encountered an error while processing your request.";
+    return "I encountered an error while processing your request. Please try asking a more specific question about the document.";
   }
 }
 
