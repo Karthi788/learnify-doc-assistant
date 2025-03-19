@@ -1,6 +1,5 @@
-
 import { ChatMessage, DocumentMetadata, StudyPlan, StudySession } from "@/types/document";
-import { toast } from "@/components/ui/sonner";
+import { toast } from "sonner";
 
 const API_KEY = "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"; // Note: This is not secure for production
 const API_URL = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2";

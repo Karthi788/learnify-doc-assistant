@@ -1,11 +1,10 @@
-
 import { useEffect, useState } from "react";
 import { DocumentMetadata, StudyPlan as StudyPlanType, StudySession } from "@/types/document";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { BookOpen, Clock, Download, Plus, ExternalLink } from "lucide-react";
 import { generateStudyPlan } from "@/utils/aiUtils";
-import { toast } from "@/components/ui/sonner";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
 interface StudyPlanProps {
@@ -73,14 +72,14 @@ const StudyPlan = ({ document, isDocumentReady }: StudyPlanProps) => {
     const url = URL.createObjectURL(blob);
     
     // Create a temporary link and click it
-    const a = document.createElement('a');
+    const a = window.document.createElement('a');
     a.href = url;
     a.download = `StudyPlan-${document.fileName.split('.')[0]}.txt`;
-    document.body.appendChild(a);
+    window.document.body.appendChild(a);
     a.click();
     
     // Clean up
-    document.body.removeChild(a);
+    window.document.body.removeChild(a);
     URL.revokeObjectURL(url);
     
     toast.success("Study plan downloaded successfully!");

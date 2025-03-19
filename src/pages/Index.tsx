@@ -1,8 +1,7 @@
-
 import { useState, useEffect } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
-import { toast } from "@/components/ui/sonner";
+import { toast } from "sonner";
 import { MessageSquare, BookOpen } from "lucide-react";
 import { DocumentMetadata } from "@/types/document";
 import FileUploader from "@/components/FileUploader";
