@@ -37,23 +37,70 @@ export const createDocumentMetadata = (file: File): DocumentMetadata => {
   };
 };
 
-// Mock function to simulate document text extraction
-// In a real app, this would use a PDF parser or similar
+// Actual document text extraction - now reads file content
 export const extractDocumentText = async (file: File): Promise<string> => {
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      // This is a mock implementation
-      // For real implementation, use PDF.js, mammoth.js (for DOCX), etc.
-      const simulatedText = `This is simulated text content from ${file.name}. 
-      In a real implementation, we would extract the actual text content from the document.
-      The document would be processed using appropriate libraries for the file type.`;
-      
-      resolve(simulatedText);
-    }, 1500); // Simulate processing time
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    
+    reader.onload = (e) => {
+      try {
+        const fileType = extractFileType(file.name);
+        let content = '';
+        
+        if (e.target?.result) {
+          if (fileType === 'TXT') {
+            // For text files, we can directly use the result
+            content = e.target.result as string;
+          } else if (fileType === 'PDF') {
+            // For PDF files in a real implementation, we would use PDF.js
+            // For now, we'll just use the text content if it's a text-based PDF
+            content = e.target.result as string;
+            // Strip any binary data or use proper PDF.js parsing
+            content = content.replace(/[^\x20-\x7E\r\n]/g, '');
+          } else if (fileType === 'DOCX') {
+            // For DOCX files in a real implementation, we would use mammoth.js
+            // For now, we'll just use the text content if available
+            content = e.target.result as string;
+            // Strip any binary data or use proper docx parsing library
+            content = content.replace(/[^\x20-\x7E\r\n]/g, '');
+          }
+          
+          if (content) {
+            resolve(content);
+          } else {
+            // If we couldn't extract content, create a meaningful message
+            resolve(`Document content from ${file.name}. This file type (${fileType}) requires special processing. Please make sure you're uploading a text-based document for best results.`);
+          }
+        } else {
+          reject(new Error("Failed to read file content"));
+        }
+      } catch (error) {
+        console.error("Error extracting text:", error);
+        reject(error);
+      }
+    };
+    
+    reader.onerror = (error) => {
+      console.error("Error reading file:", error);
+      reject(error);
+    };
+    
+    // For text files, read as text
+    if (file.type === 'text/plain') {
+      reader.readAsText(file);
+    } else {
+      // For PDF and DOCX, in a full implementation we'd use specialized libraries
+      // For now, try to read as text if possible, otherwise read as array buffer
+      try {
+        reader.readAsText(file);
+      } catch (error) {
+        reader.readAsArrayBuffer(file);
+      }
+    }
   });
 };
 
-// Mock function to estimate word and page count
+// Estimate document stats from actual content
 export const estimateDocumentStats = (text: string): { wordCount: number; pageCount: number } => {
   const words = text.trim().split(/\s+/).length;
   // Rough estimate: ~500 words per page

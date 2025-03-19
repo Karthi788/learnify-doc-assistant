@@ -44,7 +44,7 @@ const ChatInterface = ({ document, isDocumentReady }: ChatInterfaceProps) => {
     setIsProcessing(true);
     
     try {
-      // Process with AI
+      // Process with AI using the actual document content
       await processQuery(
         currentMessage, 
         document.content || "No document content available.", 
@@ -56,6 +56,17 @@ const ChatInterface = ({ document, isDocumentReady }: ChatInterfaceProps) => {
       setIsProcessing(false);
     }
   };
+  
+  // Check if we have unique IDs for each message to avoid React key warnings
+  useEffect(() => {
+    // This ensures each message has a truly unique ID
+    setMessages(prevMessages => 
+      prevMessages.map((msg, index) => ({
+        ...msg,
+        id: msg.id || `msg-${index}-${Date.now()}`
+      }))
+    );
+  }, []);
   
   return (
     <div className="flex flex-col h-full">

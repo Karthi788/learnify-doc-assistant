@@ -1,3 +1,4 @@
+
 import { ChatMessage, DocumentMetadata, StudyPlan, StudySession } from "@/types/document";
 import { toast } from "sonner";
 
