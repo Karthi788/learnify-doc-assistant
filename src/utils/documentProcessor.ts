@@ -1,4 +1,3 @@
-
 import { DocumentMetadata, FileType } from "@/types/document";
 import * as pdfjs from 'pdfjs-dist';
 
@@ -42,27 +41,73 @@ export const createDocumentMetadata = (file: File): DocumentMetadata => {
   };
 };
 
-// Process PDF files using PDF.js
+// Enhanced PDF processing for large documents
 async function extractPdfText(file: File): Promise<string> {
   try {
+    console.log("Starting PDF extraction for large document...");
     const arrayBuffer = await file.arrayBuffer();
-    const pdf = await pdfjs.getDocument(arrayBuffer).promise;
+    const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
     
-    let fullText = '';
     const maxPages = pdf.numPages;
+    console.log(`PDF has ${maxPages} pages, processing...`);
     
-    // Extract text from each page
-    for (let i = 1; i <= maxPages; i++) {
-      const page = await pdf.getPage(i);
-      const textContent = await page.getTextContent();
-      const pageText = textContent.items.map((item: any) => item.str).join(' ');
-      fullText += pageText + '\n\n';
+    // For very large documents, we'll process in chunks
+    const CHUNK_SIZE = 50; // Process 50 pages at a time
+    let fullText = '';
+    
+    // Process the document in chunks to avoid memory issues
+    for (let i = 1; i <= maxPages; i += CHUNK_SIZE) {
+      const endPage = Math.min(i + CHUNK_SIZE - 1, maxPages);
+      console.log(`Processing pages ${i} to ${endPage}...`);
+      
+      // Process each chunk of pages
+      const chunkPromises = [];
+      for (let pageNum = i; pageNum <= endPage; pageNum++) {
+        chunkPromises.push(extractPageText(pdf, pageNum));
+      }
+      
+      // Wait for the current chunk to complete
+      const chunkResults = await Promise.all(chunkPromises);
+      fullText += chunkResults.join('\n\n');
+      
+      // Give the UI thread a chance to breathe between chunks
+      await new Promise(resolve => setTimeout(resolve, 10));
     }
     
+    console.log("PDF extraction complete.");
     return fullText;
   } catch (error) {
     console.error("Error extracting PDF text:", error);
     return `Failed to extract text from PDF. Error: ${error}`;
+  }
+}
+
+// Helper to extract text from a single page
+async function extractPageText(pdf: any, pageNum: number): Promise<string> {
+  try {
+    const page = await pdf.getPage(pageNum);
+    const textContent = await page.getTextContent({ normalizeWhitespace: true });
+    
+    // More sophisticated text extraction that preserves layout better
+    let lastY = null;
+    let text = '';
+    
+    for (const item of textContent.items) {
+      const itemAny = item as any;
+      
+      // Check if we're on a new line
+      if (lastY !== null && lastY !== itemAny.transform[5]) {
+        text += '\n';
+      }
+      
+      text += itemAny.str;
+      lastY = itemAny.transform[5];
+    }
+    
+    return text;
+  } catch (error) {
+    console.error(`Error extracting text from page ${pageNum}:`, error);
+    return `[Page ${pageNum} extraction failed]`;
   }
 }
 
@@ -116,7 +161,7 @@ export const estimateDocumentStats = (text: string): { wordCount: number; pageCo
   return { wordCount: words, pageCount: pages };
 };
 
-// Function to truncate document to a manageable size for API processing
+// Improved function to prepare document for AI processing
 export const prepareDocumentForAI = (text: string, maxTokens: number = 100000): string => {
   // Rough estimate: 1 token ≈ 4 characters for English text
   const maxChars = maxTokens * 4;
@@ -125,7 +170,49 @@ export const prepareDocumentForAI = (text: string, maxTokens: number = 100000): 
     return text;
   }
   
-  // If document is too large, truncate it
-  const truncatedText = text.substring(0, maxChars);
-  return truncatedText + "\n\n[Document truncated due to size limitations]";
+  console.log(`Document is very large: ${text.length} characters. Truncating to ~${maxChars} characters.`);
+  
+  // For large documents, we'll use a more intelligent truncation
+  // that keeps both the beginning and end of the document
+  const startChars = Math.floor(maxChars * 0.7); // 70% from start
+  const endChars = Math.floor(maxChars * 0.3);   // 30% from end
+  
+  const startText = text.substring(0, startChars);
+  const endText = text.substring(text.length - endChars);
+  
+  return startText + 
+    "\n\n[...Document truncated due to size limitations...]\n\n" + 
+    endText;
+};
+
+// Create a function to extract key topics from the document
+export const extractDocumentTopics = (text: string): string[] => {
+  // This is a simple implementation that looks for capitalized phrases
+  // A more sophisticated approach would use NLP libraries
+  const lines = text.split('\n');
+  const potentialTopics = new Set<string>();
+  
+  // Look for lines that might be headings
+  for (const line of lines) {
+    const trimmedLine = line.trim();
+    
+    // Skip empty lines and very long lines
+    if (trimmedLine.length === 0 || trimmedLine.length > 100) continue;
+    
+    // Look for capitalized phrases that might be headings
+    if (/^[A-Z][A-Za-z\s]{2,50}$/.test(trimmedLine) && 
+        !trimmedLine.endsWith('.')) {
+      potentialTopics.add(trimmedLine);
+    }
+    
+    // Also check for numbered or bulleted headings
+    if (/^[\d\.\-•\*]+\s+[A-Z][A-Za-z\s]{2,50}$/.test(trimmedLine) &&
+        !trimmedLine.endsWith('.')) {
+      const topic = trimmedLine.replace(/^[\d\.\-•\*]+\s+/, '');
+      potentialTopics.add(topic);
+    }
+  }
+  
+  // Convert Set to Array and limit to top 20 topics
+  return Array.from(potentialTopics).slice(0, 20);
 };
