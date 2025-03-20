@@ -44,14 +44,32 @@ const ChatInterface = ({ document, isDocumentReady }: ChatInterfaceProps) => {
     setIsProcessing(true);
     
     try {
-      // Process with AI using the actual document content
+      // Enhanced error handling for missing content
+      if (!document.content) {
+        console.error("Document content is missing or empty");
+        throw new Error("Document content is missing");
+      }
+      
+      // Process with AI using the document content with logging
+      console.log(`Processing query "${currentMessage}" against document of length ${document.content.length}`);
       await processQuery(
         currentMessage, 
-        document.content || "No document content available.", 
+        document.content, 
         setMessages
       );
     } catch (error) {
       console.error("Error in chat:", error);
+      
+      // Add a more descriptive error message to the chat
+      setMessages(prev => [
+        ...prev,
+        {
+          id: `error-${Date.now()}`,
+          role: 'assistant',
+          content: 'Sorry, I encountered an error processing your document. This might happen if the document is extremely large or in an unsupported format. Please try with a more specific question or a smaller document.',
+          timestamp: new Date()
+        }
+      ]);
     } finally {
       setIsProcessing(false);
     }

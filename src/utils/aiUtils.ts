@@ -1,4 +1,3 @@
-
 import { ChatMessage, DocumentMetadata, StudyPlan, StudySession } from "@/types/document";
 import { toast } from "sonner";
 import { prepareDocumentForAI, extractDocumentTopics } from "./documentProcessor";
@@ -32,8 +31,10 @@ export async function processQuery(
       }
     ]);
 
-    // For very large documents, we need to be smarter about context selection
+    // For very large documents, use enhanced context selection
+    console.log(`Original document size: ${documentContent.length} characters`);
     const preparedDocument = prepareDocumentForQuerySpecific(query, documentContent);
+    console.log(`Prepared document size after smart selection: ${preparedDocument.length} characters`);
     
     // Create a system prompt that instructs the model how to behave
     const systemPrompt = `You are a helpful AI assistant that answers questions based on the provided document. 
@@ -45,8 +46,8 @@ export async function processQuery(
     Document content: 
     ${preparedDocument}`;
     
-    // Call the Mistral API
-    const response = await callMistralAPI(systemPrompt, query);
+    // Call the Mistral API with progressive fallbacks for large documents
+    const response = await callMistralAPIWithFallbacks(systemPrompt, query);
     
     // Update the message with the response
     setMessages(prev => 
@@ -80,15 +81,18 @@ export async function processQuery(
 }
 
 // Enhanced function to prepare document content based on the specific query
+// This is critical for handling 200-500 page documents
 function prepareDocumentForQuerySpecific(query: string, documentContent: string): string {
   console.log("Preparing document context for query:", query);
   
   // If document is small enough, use it completely
-  if (documentContent.length < 300000) {
+  if (documentContent.length < 100000) {
     return prepareDocumentForAI(documentContent);
   }
   
   // For large documents, we need to be smarter
+  console.log("Document is very large. Implementing topic-based search.");
+  
   // 1. Extract potential topics from the query
   const queryWords = query.toLowerCase().split(/\s+/);
   const queryImportantWords = queryWords.filter(word => 
@@ -98,61 +102,129 @@ function prepareDocumentForQuerySpecific(query: string, documentContent: string)
   
   console.log("Important query words:", queryImportantWords);
   
-  // 2. Split document into sections (paragraphs)
+  // 2. Split document into sections (paragraphs) more efficiently
+  // For very large documents, we use a more aggressive chunking approach
   const sections = documentContent.split(/\n\s*\n/);
+  console.log(`Document split into ${sections.length} sections`);
   
-  // 3. Score each section based on query relevance
-  const scoredSections = sections.map(section => {
-    const sectionLower = section.toLowerCase();
-    let score = 0;
+  // 3. Score each section based on query relevance with improved efficiency
+  // Create a limited array of scored sections to avoid memory issues
+  const MAX_SECTIONS_TO_SCORE = 1000;
+  const sectionSampleSize = Math.min(sections.length, MAX_SECTIONS_TO_SCORE);
+  const samplingInterval = Math.max(1, Math.floor(sections.length / sectionSampleSize));
+  
+  const scoredSections = [];
+  
+  // Process sections in batches to avoid blocking the main thread
+  const BATCH_SIZE = 100;
+  
+  for (let batchStart = 0; batchStart < sections.length; batchStart += BATCH_SIZE * samplingInterval) {
+    const batchSections = [];
     
-    // Score based on query word occurrences
-    for (const word of queryImportantWords) {
-      const regex = new RegExp(`\\b${word}\\b`, 'gi');
-      const matches = sectionLower.match(regex);
-      if (matches) {
-        score += matches.length * 2;
+    // Create a batch of sections to score
+    for (let i = 0; i < BATCH_SIZE && (batchStart + i * samplingInterval) < sections.length; i++) {
+      const sectionIndex = batchStart + i * samplingInterval;
+      batchSections.push({
+        index: sectionIndex,
+        section: sections[sectionIndex]
+      });
+    }
+    
+    // Score each section in this batch
+    for (const {index, section} of batchSections) {
+      const sectionLower = section.toLowerCase();
+      let score = 0;
+      
+      // Score based on query word occurrences
+      for (const word of queryImportantWords) {
+        const regex = new RegExp(`\\b${word}\\b`, 'gi');
+        const matches = sectionLower.match(regex);
+        if (matches) {
+          score += matches.length * 2;
+        }
+      }
+      
+      // Boost score for sections that look like headings
+      if (section.trim().length < 100 && /^[A-Z]/.test(section.trim())) {
+        score += 5;
+      }
+      
+      if (score > 0) {
+        scoredSections.push({ index, section, score });
       }
     }
-    
-    // Boost score for sections that look like headings
-    if (section.trim().length < 100 && /^[A-Z]/.test(section.trim())) {
-      score += 5;
-    }
-    
-    return { section, score };
-  });
+  }
   
   // 4. Sort sections by relevance score
   scoredSections.sort((a, b) => b.score - a.score);
   
-  // 5. Take top relevant sections plus some context from beginning of document
+  // 5. Take top relevant sections plus some context
   let contextContent = "";
   
   // Always include the introduction (first few paragraphs)
-  const introSize = Math.min(5, Math.floor(sections.length * 0.1));
+  const introSize = Math.min(5, Math.floor(sections.length * 0.05));
   const introSections = sections.slice(0, introSize).join('\n\n');
   contextContent += introSections + '\n\n';
   
-  // Add the most relevant sections
-  const relevantSections = scoredSections
-    .filter(item => item.score > 0)
-    .slice(0, 20)
-    .map(item => item.section)
-    .join('\n\n');
+  // For topic-specific queries, focus heavily on relevant sections
+  // Get more relevant sections for a large document
+  const relevantSectionCount = Math.min(40, Math.ceil(scoredSections.length * 0.2));
   
-  contextContent += relevantSections;
+  // Get the most relevant sections and also some context around them
+  let processedIndices = new Set<number>();
+  for (let i = 0; i < Math.min(relevantSectionCount, scoredSections.length); i++) {
+    const { index, section } = scoredSections[i];
+    
+    // Add the highly relevant section
+    if (!processedIndices.has(index)) {
+      contextContent += section + '\n\n';
+      processedIndices.add(index);
+      
+      // Also add some context (sections before and after)
+      for (let j = Math.max(0, index - 1); j <= Math.min(sections.length - 1, index + 1); j++) {
+        if (!processedIndices.has(j)) {
+          contextContent += sections[j] + '\n\n';
+          processedIndices.add(j);
+        }
+      }
+    }
+  }
   
   // Final check on size and truncate if needed
   return prepareDocumentForAI(contextContent, MAX_CONTEXT_TOKENS - 2000); // Leave room for system context
 }
 
-// Function to call the Mistral API
-async function callMistralAPI(systemPrompt: string, userQuery: string): Promise<string> {
+// Enhanced Mistral API call with progressive fallbacks for large documents
+async function callMistralAPIWithFallbacks(systemPrompt: string, userQuery: string, attemptNumber: number = 1): Promise<string> {
   try {
+    console.log(`API Call attempt #${attemptNumber} - Calling Mistral API...`);
+    
     // Log token estimate to help with debugging
     const totalPromptLength = systemPrompt.length + userQuery.length;
     console.log(`Estimated prompt length: ${totalPromptLength} characters (roughly ${Math.ceil(totalPromptLength/4)} tokens)`);
+    
+    // Progressive reductions for retries
+    let currentSystemPrompt = systemPrompt;
+    let maxTokens = MAX_RESPONSE_TOKENS;
+    
+    // For retry attempts, reduce context size
+    if (attemptNumber > 1) {
+      const reductionFactor = 0.7; // Reduce by 30% each time
+      const reducedLength = Math.floor(systemPrompt.length * Math.pow(reductionFactor, attemptNumber - 1));
+      
+      // Extract document content only
+      const docContentStart = systemPrompt.indexOf("Document content:") + 16;
+      
+      // Build a new prompt with reduced document content
+      currentSystemPrompt = systemPrompt.substring(0, docContentStart) + 
+        systemPrompt.substring(docContentStart, docContentStart + reducedLength) + 
+        "\n\n[Document content was truncated due to size limitations]";
+      
+      console.log(`Retry attempt #${attemptNumber} - Reduced prompt to ${currentSystemPrompt.length} characters`);
+      
+      // Also reduce response length for faster processing
+      maxTokens = Math.floor(MAX_RESPONSE_TOKENS * 0.8);
+    }
     
     const response = await fetch(API_URL, {
       method: "POST",
@@ -165,14 +237,14 @@ async function callMistralAPI(systemPrompt: string, userQuery: string): Promise<
         messages: [
           {
             role: "system",
-            content: systemPrompt
+            content: currentSystemPrompt
           },
           {
             role: "user",
             content: userQuery
           }
         ],
-        max_tokens: MAX_RESPONSE_TOKENS,
+        max_tokens: maxTokens,
         temperature: 0.7,
       }),
     });
@@ -181,21 +253,19 @@ async function callMistralAPI(systemPrompt: string, userQuery: string): Promise<
       const errorData = await response.json();
       console.error("Mistral API error:", errorData);
       
-      // If token limit exceeded, try with a shorter context
-      if (errorData.message && errorData.message.includes("too large for model")) {
-        console.log("Token limit exceeded, retrying with shorter context");
+      // If token limit exceeded or context too large, try with a shorter context
+      if (attemptNumber < 3 && 
+          (errorData.message?.includes("too large for model") || 
+          errorData.message?.includes("token limit") ||
+          errorData.message?.includes("exceed"))) {
         
-        // Create a shorter system prompt
-        const shorterPrompt = `You are a helpful AI assistant answering questions about a document.
-        I can only provide limited context due to size limitations.
-        If you need more specific information, please ask a more targeted question.
+        console.log("Token limit or context size issue, retrying with smaller context...");
         
-        Document excerpt:
-        ${systemPrompt.substring(systemPrompt.indexOf("Document content:") + 16, systemPrompt.indexOf("Document content:") + 30000)}
-        [Document truncated due to size limitations]`;
+        // Wait a short time before retry to avoid rate limiting
+        await new Promise(resolve => setTimeout(resolve, 1000));
         
-        // Try again with shorter context
-        return await callMistralAPI(shorterPrompt, userQuery);
+        // Retry with a smaller context
+        return await callMistralAPIWithFallbacks(systemPrompt, userQuery, attemptNumber + 1);
       }
       
       throw new Error(`API request failed with status ${response.status}: ${errorData.message || 'Unknown error'}`);
@@ -205,8 +275,39 @@ async function callMistralAPI(systemPrompt: string, userQuery: string): Promise<
     return data.choices[0]?.message?.content || "I couldn't generate a response.";
   } catch (error) {
     console.error("Error calling Mistral API:", error);
+    
+    // For retriable errors, attempt fallback to HuggingFace API
+    if (attemptNumber < 3) {
+      console.log("Error with Mistral API, retrying with reduced context...");
+      return await callMistralAPIWithFallbacks(systemPrompt, userQuery, attemptNumber + 1);
+    }
+    
+    // Final fallback for severe errors - try with minimal context
+    if (attemptNumber === 3) {
+      console.log("Multiple Mistral API failures, using minimal context fallback");
+      
+      // Create a minimal prompt
+      const minimalPrompt = `You are a helpful AI assistant answering questions about a document.
+      I can only provide very limited context due to technical limitations.
+      
+      Here's a brief excerpt from the document:
+      ${systemPrompt.substring(systemPrompt.indexOf("Document content:") + 16, systemPrompt.indexOf("Document content:") + 5000)}
+      [Document heavily truncated]`;
+      
+      try {
+        return await callMistralAPIWithFallbacks(minimalPrompt, userQuery, 4);
+      } catch (finalError) {
+        return "I encountered multiple errors while processing your request. Please try asking a more specific question about a particular section of the document.";
+      }
+    }
+    
     return "I encountered an error while processing your request. Please try asking a more specific question about the document.";
   }
+}
+
+// Use the original callMistralAPI function as a compatibility layer
+async function callMistralAPI(systemPrompt: string, userQuery: string): Promise<string> {
+  return await callMistralAPIWithFallbacks(systemPrompt, userQuery);
 }
 
 // In a real implementation, this would call an API
